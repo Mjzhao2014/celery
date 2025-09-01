@@ -32,6 +32,13 @@ from celery.local import PromiseProxy, maybe_evaluate
 from celery.utils import abstract
 from celery.utils.collections import AttributeDictMixin
 from celery.utils.dispatch import Signal
+from celery.managers import (
+    ConfigurationManager,
+    ResultManager,
+    SignalManager,
+    TaskRegistryManager,
+    WorkerRunner,
+)
 from celery.utils.functional import first, head_from_fun, maybe_list
 from celery.utils.imports import gen_task_name, instantiate, symbol_by_name
 from celery.utils.log import get_logger
@@ -337,6 +344,7 @@ class Celery:
         self.finalized = False
         self._finalize_mutex = threading.RLock()
         self._pending = deque()
+        # underlying dict-based task registry
         self._tasks = tasks
         if not isinstance(self._tasks, TaskRegistry):
             self._tasks = self.registry_cls(self._tasks or {})
@@ -372,7 +380,7 @@ class Celery:
         if self.set_as_current:
             self.set_current()
 
-        # Signals
+        # Signals (app-level)
         if self.on_configure is None:
             # used to be a method pre 4.0
             self.on_configure = Signal(name='app.on_configure')
@@ -389,6 +397,12 @@ class Celery:
 
         self.on_init()
         _register_app(self)
+        # Initialize manager components after core attributes and signals are set.
+        self.task_registry: TaskRegistryManager = TaskRegistryManager(self)
+        self.config_manager: ConfigurationManager = ConfigurationManager(self)
+        self.result_manager: ResultManager = ResultManager(self)
+        self.worker_runner: WorkerRunner = WorkerRunner(self, self.loader)
+        self.signal_manager: SignalManager = SignalManager(self)
 
     def _get_default_loader(self):
         # the --loader command-line argument sets the environment variable.
@@ -602,8 +616,15 @@ class Celery:
             task_cls = type(task)
             task.name = self.gen_task_name(
                 task_cls.__name__, task_cls.__module__)
+        # add autoconfigurable retry to tasks when registering
         add_autoretry_behaviour(task, **options)
-        self.tasks[task.name] = task
+        # Ensure registration is allowed
+        if getattr(self.task_registry, '_finalized', False):
+            raise RuntimeError('Cannot register new tasks after app finalization')
+        if task.name in self._tasks:
+            # raise consistent with TaskRegistryManager contract
+            raise ValueError(f'Task {task.name!r} already registered')
+        self._tasks[task.name] = task
         task._app = self
         task.bind(self)
         return task
@@ -611,11 +632,12 @@ class Celery:
     def gen_task_name(self, name, module):
         return gen_task_name(self, name, module)
 
-    def finalize(self, auto=False):
+    def finalize(self, auto: bool = False) -> None:
         """Finalize the app.
 
         This loads built-in tasks, evaluates pending task decorators,
-        reads configuration, etc.
+        reads configuration, etc., and prevents further task
+        registration on the underlying registry.
         """
         with self._finalize_mutex:
             if not self.finalized:
@@ -623,14 +645,16 @@ class Celery:
                     raise RuntimeError('Contract breach: app not finalized')
                 self.finalized = True
                 _announce_app_finalized(self)
-
+                # flush pending lazy task proxies.
                 pending = self._pending
                 while pending:
                     maybe_evaluate(pending.popleft())
-
+                # bind all tasks to this app.
                 for task in self._tasks.values():
                     task.bind(self)
-
+                # prevent further task registrations through manager.
+                self.task_registry.finalize()
+                # send finalize signal
                 self.on_after_finalize.send(sender=self)
 
     def add_defaults(self, fun):
@@ -657,29 +681,19 @@ class Celery:
             return self._conf.add_defaults(fun())
         self._pending_defaults.append(fun)
 
-    def config_from_object(self, obj,
-                           silent=False, force=False, namespace=None):
+    def config_from_object(self, obj, silent: bool = False, force: bool = False, namespace: str = None):
         """Read configuration from object.
 
-        Object is either an actual object or the name of a module to import.
-
-        Example:
-            >>> celery.config_from_object('myapp.celeryconfig')
-
-            >>> from myapp import celeryconfig
-            >>> celery.config_from_object(celeryconfig)
-
-        Arguments:
-            silent (bool): If true then import errors will be ignored.
-            force (bool): Force reading configuration immediately.
-                By default the configuration will be read only when required.
+        Delegates to the :class:`~celery.managers.ConfigurationManager`
+        while preserving existing semantics.
         """
         self._config_source = obj
         self.namespace = namespace or self.namespace
         if force or self.configured:
+            # force immediate load.
             self._conf = None
-            if self.loader.config_from_object(obj, silent=silent):
-                return self.conf
+            self.config_manager.config_from_object(obj, silent=silent)
+            return self.conf
 
     def config_from_envvar(self, variable_name, silent=False, force=False):
         """Read configuration from environment variable.
@@ -699,10 +713,10 @@ class Celery:
                 ERR_ENVVAR_NOT_SET.strip().format(variable_name))
         return self.config_from_object(module_name, silent=silent, force=force)
 
-    def config_from_cmdline(self, argv, namespace='celery'):
-        self._conf.update(
-            self.loader.cmdline_config_parser(argv, namespace)
-        )
+    def config_from_cmdline(self, argv, namespace: str = 'celery') -> None:
+        """Parse command-line arguments and merge into current configuration."""
+        # update underlying config dict in place from manager.
+        self.conf.update(self.config_manager.cmdline_config_parser(argv, namespace))
 
     def setup_security(self, allowed_serializers=None, key=None, key_password=None, cert=None,
                        store=None, digest=DEFAULT_SECURITY_DIGEST,
@@ -1422,10 +1436,12 @@ class Celery:
 
     @property
     def backend(self):
-        """Current backend instance."""
-        if self._backend is None:
-            self._backend = self._get_backend()
-        return self._backend
+        """Current result backend instance."""
+        # lazily initialize by delegating to ResultManager
+        if self.result_manager.backend is None:
+            # ensure underlying app._backend tracks manager state.
+            self.result_manager.backend = self._get_backend()
+        return self.result_manager.backend
 
     @property
     def conf(self):

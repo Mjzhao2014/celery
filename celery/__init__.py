@@ -27,7 +27,15 @@ __keywords__ = 'task job queue distributed messaging actor'
 # -eof meta-
 
 __all__ = (
-    'Celery', 'bugreport', 'shared_task', 'Task',
+    'Celery',
+    'SignalManager',
+    'ConfigurationManager',
+    'TaskRegistryManager',
+    'ResultManager',
+    'WorkerRunner',
+    'bugreport',
+    'shared_task',
+    'Task',
     'current_app', 'current_task', 'maybe_signature',
     'chain', 'chord', 'chunks', 'group', 'signature',
     'xmap', 'xstarmap', 'uuid',
@@ -151,6 +159,13 @@ old_module, new_module = local.recreate_module(  # pragma: no cover
     __name__,
     by_module={
         'celery.app': ['Celery', 'bugreport', 'shared_task'],
+        'celery.managers': [
+            'SignalManager',
+            'ConfigurationManager',
+            'TaskRegistryManager',
+            'ResultManager',
+            'WorkerRunner',
+        ],
         'celery.app.task': ['Task'],
         'celery._state': ['current_app', 'current_task'],
         'celery.canvas': [
