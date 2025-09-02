@@ -265,7 +265,47 @@ def test_config_applies_to_app_conf():
 
     assert app.conf["task_serializer"] == "json"
     assert app.conf["broker_url"] == "amqp://localhost"
+
+def test_configuration_manager_constructor_signature():
+    """Test that ConfigurationManager constructor accepts only app as required argument."""
+    app = Celery("test")
     
+    # Should work with only app
+    manager = ConfigurationManager(app)
+    
+    # Test that required fields are properly initialized by constructor
+    assert hasattr(manager, 'app'), "ConfigurationManager must have 'app' field"
+    assert manager.app is app, "ConfigurationManager.app must be the passed app instance"
+    
+    assert hasattr(manager, 'override_backends'), "ConfigurationManager must have 'override_backends' field"
+    assert isinstance(manager.override_backends, dict), "override_backends must be initialized as dict"
+    
+    assert hasattr(manager, 'loader'), "ConfigurationManager must have 'loader' field"
+    assert manager.loader is not None, "loader must be set internally"
+    
+    assert hasattr(manager, 'conf'), "ConfigurationManager must have 'conf' field"
+    assert manager.conf is not None, "conf must be set internally"
+
+def test_configuration_manager_fields_declared_by_init():
+    """Test that fields are actually declared by ConfigurationManager.__init__, not set externally."""
+    app = Celery("test")
+    
+    # Create manager - fields should be set by __init__
+    manager = ConfigurationManager(app)
+    
+    # Test that override_backends exists and is a dict (not None, not missing)
+    assert 'override_backends' in manager.__dict__, "override_backends must be in manager's __dict__"
+    assert isinstance(manager.override_backends, dict), "override_backends must be initialized as dict by __init__"
+    
+    # Test that loader exists 
+    assert 'loader' in manager.__dict__, "loader must be in manager's __dict__"
+    
+    # Test that conf exists
+    assert 'conf' in manager.__dict__, "conf must be in manager's __dict__"
+    
+    # Test initial state
+    assert len(manager.override_backends) == 0, "override_backends should start as empty dict"
+
 # TaskRegistryManager
 def test_register_task_adds_task():
     app = Celery()
@@ -489,6 +529,26 @@ def test_celery_with_all_managers(tmp_path, monkeypatch):
     app.signal_manager.connect(sig, handler)
     app.signal_manager.emit(sig, data="hello")
     assert called["value"] == "hello"
+
+def test_override_backend_integration_from_config_manager():
+    """Test that ResultManager uses override_backends from ConfigurationManager properly."""
+    app = Celery()
+    
+    # Verify ConfigurationManager initializes override_backends as empty dict
+    assert hasattr(app.config_manager, 'override_backends'), "ConfigurationManager must declare override_backends"
+    assert isinstance(app.config_manager.override_backends, dict), "override_backends must be dict"
+    assert len(app.config_manager.override_backends) == 0, "override_backends should start empty"
+    
+    # Set up override through ConfigurationManager (not direct assignment)
+    app.config_manager.override_backends["original://"] = "memory://"
+    app.conf.result_backend = "original://"
+
+    # ResultManager should respect the override_backends from ConfigurationManager
+    result_manager = ResultManager(app)
+    result_manager.init_backend()
+
+    backend = result_manager.get_backend()
+    assert isinstance(backend, CacheBackend), "Backend should be overridden to memory:// -> CacheBackend"
 
 def test_override_backend_uri_applied():
     app = Celery()
