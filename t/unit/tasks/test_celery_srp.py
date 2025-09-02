@@ -577,3 +577,89 @@ def test_override_backend_uri_not_applied():
 
     backend = manager.get_backend()
     assert isinstance(backend, RPCBackend)  # rpc:// not overridden
+
+def test_init_worker_process_prepares_preprocess_resources():
+    """Test that init_worker_process() properly prepares pre-process resources."""
+    class ResourceTrackingLoader(BaseLoader):
+        def __init__(self, app):
+            super().__init__(app)
+            self.worker_process_resources_prepared = False
+            self.resource_preparation_order = []
+    
+        def import_default_modules(self):
+            pass
+            
+        def on_worker_process_init(self):
+            self.resource_preparation_order.append('process_init')
+            self.worker_process_resources_prepared = True
+    
+    app = Celery("test")
+    loader = ResourceTrackingLoader(app)
+    runner = WorkerRunner(app, loader)
+    
+    # Before calling init_worker_process
+    assert not loader.worker_process_resources_prepared, "Resources should not be prepared initially"
+    
+    # Call init_worker_process
+    runner.init_worker_process()
+    
+    # Verify resources were prepared
+    assert loader.worker_process_resources_prepared, "Resources should be prepared after init_worker_process"
+    assert 'process_init' in loader.resource_preparation_order, "Process init should be in preparation order"
+
+def test_store_and_get_result_roundtrip_verification():
+    """Test that store_result writes and get_result reads back the exact same data."""
+    app = Celery()
+    app.conf.result_backend = "cache+memory://"  # Use memory backend for testing
+    
+    manager = ResultManager(app)
+    manager.init_backend()
+    
+    # Test data - various types to ensure serialization works
+    test_cases = [
+        ("simple-task", "simple string result", "SUCCESS"),
+        ("dict-task", {"key": "value", "number": 123, "list": [1, 2, 3]}, "SUCCESS"),
+        ("number-task", 42, "SUCCESS"),
+        ("list-task", [1, "two", {"three": 3}], "SUCCESS"),
+        ("failure-task", "error message", "FAILURE"),
+        ("pending-task", None, "PENDING"),
+    ]
+    
+    for task_id, original_result, original_state in test_cases:
+        # Store the result
+        manager.store_result(task_id, original_result, original_state)
+        
+        # Retrieve the result
+        retrieved = manager.get_result(task_id)
+        
+        # Verify exact match
+        assert retrieved.result == original_result, f"Result mismatch for {task_id}: expected {original_result}, got {retrieved.result}"
+        assert retrieved.status == original_state, f"State mismatch for {task_id}: expected {original_state}, got {retrieved.status}"
+
+
+def test_signal_manager_connect_method_direct():
+    """Test that connect() method properly connects handlers to signals."""
+    app = Celery("test")
+    manager = SignalManager(app)
+    
+    # Test connecting to built-in signal
+    call_log = []
+    
+    def handler1(**kwargs):
+        call_log.append(("handler1", kwargs))
+    
+    def handler2(**kwargs):
+        call_log.append(("handler2", kwargs))
+    
+    # Connect multiple handlers to same signal
+    manager.connect(worker_init, handler1)
+    manager.connect(worker_init, handler2)
+    
+    # Emit the signal
+    manager.emit(worker_init, test_data="connect_test")
+    
+    # Verify both handlers were called
+    assert len(call_log) == 2, "Both handlers should have been called"
+    assert ("handler1", {"test_data": "connect_test"}) in call_log, "handler1 should have been called with correct data"
+    assert ("handler2", {"test_data": "connect_test"}) in call_log, "handler2 should have been called with correct data"
+
