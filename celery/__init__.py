@@ -31,6 +31,8 @@ __all__ = (
     'current_app', 'current_task', 'maybe_signature',
     'chain', 'chord', 'chunks', 'group', 'signature',
     'xmap', 'xstarmap', 'uuid',
+    'SignalManager', 'ConfigurationManager', 'TaskRegistryManager',
+    'ResultManager', 'WorkerRunner',
 )
 
 VERSION_BANNER = f'{__version__} ({SERIES})'
@@ -151,6 +153,11 @@ old_module, new_module = local.recreate_module(  # pragma: no cover
     __name__,
     by_module={
         'celery.app': ['Celery', 'bugreport', 'shared_task'],
+        'celery.app.signal_manager': ['SignalManager'],
+        'celery.app.configuration_manager': ['ConfigurationManager'],
+        'celery.app.task_registry_manager': ['TaskRegistryManager'],
+        'celery.app.result_manager': ['ResultManager'],
+        'celery.app.worker_runner': ['WorkerRunner'],
         'celery.app.task': ['Task'],
         'celery._state': ['current_app', 'current_task'],
         'celery.canvas': [

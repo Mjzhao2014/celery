@@ -337,9 +337,19 @@ class Celery:
         self.finalized = False
         self._finalize_mutex = threading.RLock()
         self._pending = deque()
+        # initialize underlying task registry early so manager can refer to it
         self._tasks = tasks
         if not isinstance(self._tasks, TaskRegistry):
             self._tasks = self.registry_cls(self._tasks or {})
+
+        # instantiate manager attributes for SRP-compliant structure.
+        # These objects wrap internal state so existing APIs remain.
+        # Will be initialized later in __init__ after signals created.
+        self.task_registry: "TaskRegistryManager" = None  # type: ignore[assignment]
+        self.config_manager: "ConfigurationManager" = None  # type: ignore[assignment]
+        self.result_manager: "ResultManager" = None  # type: ignore[assignment]
+        self.worker_runner: "WorkerRunner" = None  # type: ignore[assignment]
+        self.signal_manager: "SignalManager" = None  # type: ignore[assignment]
 
         # If the class defines a custom __reduce_args__ we need to use
         # the old way of pickling apps: pickling a list of
@@ -372,7 +382,7 @@ class Celery:
         if self.set_as_current:
             self.set_current()
 
-        # Signals
+        # Initialize signal manager and built-in instance signals.
         if self.on_configure is None:
             # used to be a method pre 4.0
             self.on_configure = Signal(name='app.on_configure')
@@ -382,6 +392,27 @@ class Celery:
         )
         self.on_after_finalize = Signal(name='app.on_after_finalize')
         self.on_after_fork = Signal(name='app.on_after_fork')
+        # instantiate signal manager and register built-in instance signals
+        from .signal_manager import SignalManager
+        self.signal_manager = SignalManager(self)
+        # mark instance-level signals as built-in so they cannot be removed
+        self.signal_manager._register_builtin_signal('on_configure', self.on_configure)
+        self.signal_manager._register_builtin_signal('on_after_configure', self.on_after_configure)
+        self.signal_manager._register_builtin_signal('on_after_finalize', self.on_after_finalize)
+        self.signal_manager._register_builtin_signal('on_after_fork', self.on_after_fork)
+
+        # initialize task registry manager wrapping the tasks dict
+        from .task_registry_manager import TaskRegistryManager
+        self.task_registry = TaskRegistryManager(self)
+        # initialize config manager and propagate loader
+        from .configuration_manager import ConfigurationManager
+        self.config_manager = ConfigurationManager(self)
+        # initialize result manager
+        from .result_manager import ResultManager
+        self.result_manager = ResultManager(self)
+        # initialize worker runner
+        from .worker_runner import WorkerRunner
+        self.worker_runner = WorkerRunner(self, self.loader)
 
         # Boolean signalling, whether fast_trace_task are enabled.
         # this attribute is set in celery.worker.trace and checked by celery.worker.request
@@ -556,15 +587,17 @@ class Celery:
         pydantic_dump_kwargs: typing.Optional[typing.Dict[str, typing.Any]] = None,
         **options,
     ):
+        """Create a Task from a Python callable and register it."""
         if not self.finalized and not self.autofinalize:
             raise RuntimeError('Contract breach: app not finalized')
         name = name or self.gen_task_name(fun.__name__, fun.__module__)
         base = base or self.Task
-
-        if name not in self._tasks:
-            if pydantic is True:
-                fun = pydantic_wrapper(self, fun, name, pydantic_strict, pydantic_context, pydantic_dump_kwargs)
-
+        if not self.task_registry.has_task(name):
+            if pydantic:
+                fun = pydantic_wrapper(self, fun, name,
+                                        pydantic_strict,
+                                        pydantic_context,
+                                        pydantic_dump_kwargs)
             run = fun if bind else staticmethod(fun)
             task = type(fun.__name__, (base,), dict({
                 'app': self,
@@ -582,55 +615,44 @@ class Celery:
                 task.__qualname__ = fun.__qualname__
             except AttributeError:
                 pass
-            self._tasks[task.name] = task
-            task.bind(self)  # connects task to this app
+            # add to registry using manager (binds task)
+            self.task_registry.register_task(task)
             add_autoretry_behaviour(task, **options)
         else:
-            task = self._tasks[name]
+            task = self.task_registry.get_task(name)
         return task
 
     def register_task(self, task, **options):
-        """Utility for registering a task-based class.
-
-        Note:
-            This is here for compatibility with old Celery 1.0
-            style task classes, you should not need to use this for
-            new projects.
-        """
+        """Utility for registering a task-based class using manager."""
         task = inspect.isclass(task) and task() or task
         if not task.name:
             task_cls = type(task)
             task.name = self.gen_task_name(
                 task_cls.__name__, task_cls.__module__)
         add_autoretry_behaviour(task, **options)
-        self.tasks[task.name] = task
-        task._app = self
-        task.bind(self)
-        return task
+        return self.task_registry.register_task(task)
 
     def gen_task_name(self, name, module):
         return gen_task_name(self, name, module)
 
     def finalize(self, auto=False):
-        """Finalize the app.
-
-        This loads built-in tasks, evaluates pending task decorators,
-        reads configuration, etc.
-        """
+        """Finalize the app and task registry."""
         with self._finalize_mutex:
             if not self.finalized:
                 if auto and not self.autofinalize:
                     raise RuntimeError('Contract breach: app not finalized')
+                # mark app as finalized, but postpone preventing new tasks
+                # until pending decorators have been evaluated.
                 self.finalized = True
                 _announce_app_finalized(self)
-
                 pending = self._pending
                 while pending:
                     maybe_evaluate(pending.popleft())
-
+                # now finalize registry to prevent further registration
+                self.task_registry.finalize()
+                # ensure tasks bound to this app
                 for task in self._tasks.values():
                     task.bind(self)
-
                 self.on_after_finalize.send(sender=self)
 
     def add_defaults(self, fun):
@@ -659,49 +681,30 @@ class Celery:
 
     def config_from_object(self, obj,
                            silent=False, force=False, namespace=None):
-        """Read configuration from object.
-
-        Object is either an actual object or the name of a module to import.
-
-        Example:
-            >>> celery.config_from_object('myapp.celeryconfig')
-
-            >>> from myapp import celeryconfig
-            >>> celery.config_from_object(celeryconfig)
-
-        Arguments:
-            silent (bool): If true then import errors will be ignored.
-            force (bool): Force reading configuration immediately.
-                By default the configuration will be read only when required.
-        """
+        """Read configuration from object using the configuration manager."""
         self._config_source = obj
         self.namespace = namespace or self.namespace
         if force or self.configured:
+            # reset conf to ensure reload
             self._conf = None
-            if self.loader.config_from_object(obj, silent=silent):
-                return self.conf
+            return self.config_manager.config_from_object(obj, silent=silent)
 
     def config_from_envvar(self, variable_name, silent=False, force=False):
-        """Read configuration from environment variable.
-
-        The value of the environment variable must be the name
-        of a module to import.
-
-        Example:
-            >>> os.environ['CELERY_CONFIG_MODULE'] = 'myapp.celeryconfig'
-            >>> celery.config_from_envvar('CELERY_CONFIG_MODULE')
-        """
-        module_name = os.environ.get(variable_name)
-        if not module_name:
-            if silent:
+        """Read configuration from environment variable via configuration manager."""
+        if force:
+            # like force paths just reset conf before manager handles.
+            self._conf = None
+        if silent:
+            try:
+                return self.config_manager.read_configuration(env=variable_name)
+            except ImproperlyConfigured:
                 return False
-            raise ImproperlyConfigured(
-                ERR_ENVVAR_NOT_SET.strip().format(variable_name))
-        return self.config_from_object(module_name, silent=silent, force=force)
+        return self.config_manager.read_configuration(env=variable_name)
 
     def config_from_cmdline(self, argv, namespace='celery'):
+        """Update conf from command-line options via configuration manager."""
         self._conf.update(
-            self.loader.cmdline_config_parser(argv, namespace)
+            self.config_manager.cmdline_config_parser(argv, namespace)
         )
 
     def setup_security(self, allowed_serializers=None, key=None, key_password=None, cert=None,
@@ -1422,9 +1425,9 @@ class Celery:
 
     @property
     def backend(self):
-        """Current backend instance."""
+        """Current backend instance initialized lazily via result_manager."""
         if self._backend is None:
-            self._backend = self._get_backend()
+            self._backend = self.result_manager.init_backend()
         return self._backend
 
     @property
@@ -1465,13 +1468,13 @@ class Celery:
 
     @cached_property
     def tasks(self):
-        """Task registry.
+        """Task registry (dict-like) for this application.
 
         Warning:
-            Accessing this attribute will also auto-finalize the app.
+            Accessing this attribute will auto-finalize the app.
         """
         self.finalize(auto=True)
-        return self._tasks
+        return self.task_registry.tasks
 
     @property
     def producer_pool(self):
