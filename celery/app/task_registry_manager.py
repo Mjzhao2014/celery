@@ -8,8 +8,9 @@ from celery.app.registry import TaskRegistry
 class TaskRegistryManager:
     """Manage addition to and lookup of application tasks."""
 
-    def __init__(self, app: "Celery") -> None:
+    def __init__(self, app: "Celery", allow_post_finalize: bool = False) -> None:
         self.app = app
+        self._allow_post_finalize = allow_post_finalize
         existing = getattr(app, '_tasks', None)
         if existing is None:
             self.tasks: TaskRegistry = TaskRegistry()
@@ -29,7 +30,8 @@ class TaskRegistryManager:
 
     def _ensure_can_register(self) -> None:
         if self._finalized and not self._within_finalization():
-            raise RuntimeError('Task registry has been finalized')
+            if not self._allow_post_finalize:
+                raise RuntimeError('Task registry has been finalized')
 
     def _maybe_autofinalize(self) -> None:
         if getattr(self.app, 'autofinalize', False) and not self.app.finalized:

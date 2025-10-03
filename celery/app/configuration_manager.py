@@ -2,9 +2,9 @@
 """Configuration management adhering to SRP."""
 from __future__ import annotations
 
+import os
 import ast
 import json
-import os
 import re
 from collections.abc import Mapping
 from types import ModuleType
@@ -14,7 +14,6 @@ from celery.exceptions import ImproperlyConfigured
 
 
 _CAST_PATTERN = re.compile(r'^\((\w+)\)')
-
 
 class ConfigurationManager:
     """Encapsulate configuration-related behaviour for a Celery app."""
@@ -52,6 +51,27 @@ class ConfigurationManager:
                 for key in dir(obj)
                 if not key.startswith('_')
             }
+        attrs = {
+            key: getattr(obj, key)
+            for key in dir(obj)
+            if key.isupper()
+        }
+        if attrs:
+            return attrs
+        if hasattr(obj, '__dict__'):
+            public = {}
+            for key in dir(obj):
+                if key.startswith('_'):
+                    continue
+                try:
+                    value = getattr(obj, key)
+                except AttributeError:
+                    continue
+                if callable(value):
+                    continue
+                public[key] = value
+            if public:
+                return public
         if hasattr(obj, 'items') and callable(obj.items):
             return dict(obj.items())
         raise ImportError(f"Invalid configuration object: {obj!r}")
@@ -81,12 +101,12 @@ class ConfigurationManager:
             pass
         return self.conf
 
-    def read_configuration(self, env: str = 'CELERY_CONFIG_MODULE'):
+    def read_configuration(self, env: str = 'CELERY_CONFIG_MODULE', silent: bool = False):
         module_name = os.environ.get(env)
         if not module_name:
             raise ImproperlyConfigured(
                 f"The environment variable {env!r} is not set")
-        return self.config_from_object(module_name, silent=False)
+        return self.config_from_object(module_name, silent=silent)
 
     def _cast_value(self, raw: str):
         casters = {
@@ -124,9 +144,14 @@ class ConfigurationManager:
                 pass
         return raw
 
-    def cmdline_config_parser(self, args, **kwargs) -> dict:
-        parsed = {}
-        for arg in args:
-            key, value = arg.split('=', 1)
-            parsed[key] = self._cast_value(value)
-        return parsed
+    def cmdline_config_parser(self, args, namespace='celery', **kwargs) -> dict:
+        try:
+            return self.loader.cmdline_config_parser(
+                args, namespace=namespace, **kwargs
+            )
+        except Exception:  # pragma: no cover - fall back to simple parser
+            parsed = {}
+            for arg in args:
+                key, value = arg.split('=', 1)
+                parsed[key] = self._cast_value(value)
+            return parsed

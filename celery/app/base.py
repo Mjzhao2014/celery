@@ -403,7 +403,7 @@ class Celery:
 
         # initialize task registry manager wrapping the tasks dict
         from .task_registry_manager import TaskRegistryManager
-        self.task_registry = TaskRegistryManager(self)
+        self.task_registry = TaskRegistryManager(self, allow_post_finalize=True)
         # initialize config manager and propagate loader
         from .configuration_manager import ConfigurationManager
         self.config_manager = ConfigurationManager(self)
@@ -696,8 +696,9 @@ class Celery:
             self._conf = None
         if silent:
             try:
-                return self.config_manager.read_configuration(env=variable_name)
-            except ImproperlyConfigured:
+                return self.config_manager.read_configuration(
+                    env=variable_name, silent=True)
+            except (ImproperlyConfigured, ImportError):
                 return False
         return self.config_manager.read_configuration(env=variable_name)
 

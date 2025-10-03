@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Optional, Tuple, Type
 
 from celery.app import backends
 from celery.backends.base import DisabledBackend
@@ -15,7 +15,9 @@ class ResultManager:
 
     def __init__(self, app: "Celery") -> None:
         self.app = app
-        self.backend = None
+        self._backend_cls: Optional[Type] = None
+        self._backend_url: Optional[str] = None
+        self._backend_instance = None
 
     def _resolve_backend_setting(self):
         return self.app.backend_cls or self.app.conf.result_backend
@@ -28,32 +30,44 @@ class ResultManager:
                 setting = 'cache+memory://'
         return setting
 
-    def init_backend(self):
-        if self.backend is not None:
-            return self.backend
+    def _prepare_backend_definition(self) -> Tuple[Optional[Type], Optional[str]]:
+        if self._backend_cls is not None or self._backend_instance is not None:
+            return self._backend_cls, self._backend_url
 
         setting = self._apply_overrides(self._resolve_backend_setting())
 
         try:
             if isinstance(setting, str) or setting is None:
                 backend_cls, url = backends.by_url(setting, self.app.loader)
-                if backend_cls is DisabledBackend:
+                if backend_cls is DisabledBackend and setting is None:
                     backend_cls, url = backends.by_url('cache+memory://', self.app.loader)
-                self.backend = backend_cls(app=self.app, url=url)
+                self._backend_cls, self._backend_url = backend_cls, url
             elif isinstance(setting, type):
-                self.backend = setting(app=self.app)
+                self._backend_cls, self._backend_url = setting, None
             else:
                 setting.app = self.app
-                self.backend = setting
+                self._backend_instance = setting
         except ImproperlyConfigured as exc:
             raise ImportError(str(exc)) from exc
 
-        return self.backend
+        return self._backend_cls, self._backend_url
+
+    def init_backend(self):
+        backend_cls, backend_url = self._prepare_backend_definition()
+        if self._backend_instance is not None and backend_cls is None:
+            backend = self._backend_instance
+        else:
+            backend = backend_cls(app=self.app, url=backend_url)
+        self.app._backend = backend
+        return backend
 
     def get_backend(self):
-        if self.backend is None:
-            raise RuntimeError('Result backend not initialized')
-        return self.backend
+        backend = self.app._backend
+        if backend is None:
+            if self._backend_cls is None and self._backend_instance is None:
+                raise RuntimeError('Result backend not initialized')
+            backend = self.init_backend()
+        return backend
 
     def _ensure_backend_ready(self):
         backend = self.get_backend()
