@@ -1,18 +1,15 @@
 # -*- coding: utf-8 -*-
-"""TaskRegistryManager abstracts management of the application's tasks.
+"""Task registry management adhering to SRP."""
+from __future__ import annotations
 
-It holds a reference to the application's task registry (a dict-like
-registry of task instances) and provides methods to register and
-lookup tasks. It can be finalized to prevent further registration.
-"""
 from celery.app.registry import TaskRegistry
 
 
 class TaskRegistryManager:
-    """Manage addition to and query of the app's task registry."""
+    """Manage addition to and lookup of application tasks."""
+
     def __init__(self, app: "Celery") -> None:
         self.app = app
-        # Use existing task registry if already created
         existing = getattr(app, '_tasks', None)
         if existing is None:
             self.tasks: TaskRegistry = TaskRegistry()
@@ -21,26 +18,46 @@ class TaskRegistryManager:
             self.tasks = existing
         self._finalized = False
 
+    def _within_finalization(self) -> bool:
+        mutex = getattr(self.app, '_finalize_mutex', None)
+        if mutex is None:
+            return False
+        owned = getattr(mutex, '_is_owned', None)
+        if owned is None:
+            return False
+        return bool(owned())
+
+    def _ensure_can_register(self) -> None:
+        if self._finalized and not self._within_finalization():
+            raise RuntimeError('Task registry has been finalized')
+
+    def _maybe_autofinalize(self) -> None:
+        if getattr(self.app, 'autofinalize', False) and not self.app.finalized:
+            self.app.finalize(auto=True)
+
     def register_task(self, task):
         """Register a new task with the registry."""
-        if self._finalized:
-            raise RuntimeError('Task registry has been finalized')
+        self._ensure_can_register()
         if task.name in self.tasks:
             raise ValueError(f"Task {task.name!r} already registered")
         self.tasks[task.name] = task
-        # bind task to app if not yet bound
         task._app = self.app
         task.bind(self.app)
         return task
 
     def get_task(self, name: str):
-        """Retrieve a task by name or raise KeyError."""
+        """Retrieve a task by name or raise :class:`KeyError`."""
+        if name not in self.tasks:
+            self._maybe_autofinalize()
         if name not in self.tasks:
             raise KeyError(name)
         return self.tasks[name]
 
     def has_task(self, name: str) -> bool:
-        """Return True if a task with given name exists."""
+        """Return ``True`` if a task with the given name exists."""
+        if name in self.tasks:
+            return True
+        self._maybe_autofinalize()
         return name in self.tasks
 
     def finalize(self) -> None:
