@@ -620,6 +620,15 @@ class Celery:
             add_autoretry_behaviour(task, **options)
         else:
             task = self.task_registry.get_task(name)
+            if base and not isinstance(task, base):
+                orig_cls = task.__class__
+                if not issubclass(orig_cls, base):
+                    attrs = {
+                        '__module__': orig_cls.__module__,
+                        '__doc__': orig_cls.__doc__,
+                    }
+                    task.__class__ = type(orig_cls.__name__, (base, orig_cls), attrs)
+                add_autoretry_behaviour(task, **options)
         return task
 
     def register_task(self, task, **options):
