@@ -32,9 +32,15 @@ class ConfigurationManager:
         loader_overrides = getattr(self.loader, 'override_backends', None)
         if loader_overrides is not None:
             self.override_backends = dict(loader_overrides)
-        elif getattr(self.app, 'configured', False):
-            if 'override_backends' in self.app.conf:
-                overrides = self.app.conf.get('override_backends', {}) or {}
+        else:
+            if getattr(self.app, 'configured', False):
+                conf_source = self.app.conf
+            else:
+                # Use cached reference so we don't trigger full config load before finalize
+                conf_source = self.conf or getattr(self.app, '_conf', None)
+
+            if conf_source and hasattr(conf_source, 'get'):
+                overrides = conf_source.get('override_backends', {}) or {}
                 self.override_backends = dict(overrides)
 
     def _update_conf(self, data: Dict[str, Any]) -> None:
