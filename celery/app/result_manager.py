@@ -39,8 +39,6 @@ class ResultManager:
         try:
             if isinstance(setting, str) or setting is None:
                 backend_cls, url = backends.by_url(setting, self.app.loader)
-                if backend_cls is DisabledBackend and setting is None:
-                    backend_cls, url = backends.by_url('cache+memory://', self.app.loader)
                 self._backend_cls, self._backend_url = backend_cls, url
             elif isinstance(setting, type):
                 self._backend_cls, self._backend_url = setting, None

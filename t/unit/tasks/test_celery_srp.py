@@ -420,6 +420,14 @@ def test_get_backend_before_init():
     with pytest.raises(RuntimeError):
         manager.get_backend()
 
+def test_init_backend_without_result_backend_uses_disabled():
+    app = Celery()
+    manager = ResultManager(app)
+
+    backend = manager.init_backend()
+
+    assert isinstance(backend, DisabledBackend)
+
 def test_store_result_with_disabled_backend():
     app = Celery()
     app.conf.result_backend = DisabledBackend(app)
@@ -492,7 +500,10 @@ def test_worker_process_init(setup_runner):
 # integration test
 def test_celery_with_all_managers(tmp_path, monkeypatch):
     config_path = tmp_path / "testconfig.py"
-    config_path.write_text("broker_url = 'amqp://localhost'")
+    config_path.write_text("\n".join([
+        "broker_url = 'amqp://localhost'",
+        "result_backend = 'cache+memory://'",
+    ]))
     monkeypatch.setenv("CELERY_CONFIG_MODULE", "testconfig")
     monkeypatch.syspath_prepend(str(tmp_path))
 
@@ -562,7 +573,7 @@ def test_override_backend_uri_applied():
     manager.init_backend()
 
     backend = manager.get_backend()
-    assert isinstance(backend, CacheBackend)  # memory:// â†’ CacheBackend
+    assert isinstance(backend, CacheBackend)  # memory:// -> CacheBackend
 
 def test_override_backend_uri_not_applied():
     app = Celery()

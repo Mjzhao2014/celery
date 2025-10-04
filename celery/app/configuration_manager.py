@@ -23,7 +23,7 @@ class ConfigurationManager:
         self.loader = self.app.loader
         self.override_backends: Dict[str, str] = dict(
             getattr(self.loader, 'override_backends', {}) or {})
-        self.conf = self.app.conf
+        self.conf = getattr(self.app, '_conf', None)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -32,15 +32,17 @@ class ConfigurationManager:
         loader_overrides = getattr(self.loader, 'override_backends', None)
         if loader_overrides is not None:
             self.override_backends = dict(loader_overrides)
-        else:
-            overrides = self.app.conf.get('override_backends', {}) or {}
-            self.override_backends = dict(overrides)
+        elif getattr(self.app, 'configured', False):
+            if 'override_backends' in self.app.conf:
+                overrides = self.app.conf.get('override_backends', {}) or {}
+                self.override_backends = dict(overrides)
 
     def _update_conf(self, data: Dict[str, Any]) -> None:
         if data:
             self.app.conf.update(data)
         self._sync_override_backends()
-        self.conf = self.app.conf
+        if getattr(self.app, 'configured', False):
+            self.conf = self.app.conf
 
     def _mapping_from_object(self, obj: Any) -> Dict[str, Any]:
         if isinstance(obj, Mapping):
