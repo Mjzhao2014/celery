@@ -1,5 +1,11 @@
 """The Azure Storage Block Blob backend for Celery."""
-from kombu.transport.azurestoragequeues import Transport as AzureStorageQueuesTransport
+try:  # pragma: no cover - optional dependency
+    from kombu.transport.azurestoragequeues import (
+        Transport as AzureStorageQueuesTransport,
+    )
+except ImportError:  # pragma: no cover
+    AzureStorageQueuesTransport = None
+
 from kombu.utils import cached_property
 from kombu.utils.encoding import bytes_to_str
 
@@ -8,11 +14,11 @@ from celery.utils.log import get_logger
 
 from .base import KeyValueStoreBackend
 
-try:
+try:  # pragma: no cover - optional dependency
     import azure.storage.blob as azurestorage
     from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
     from azure.storage.blob import BlobServiceClient
-except ImportError:
+except ImportError:  # pragma: no cover
     azurestorage = None
 
 __all__ = ("AzureBlockBlobBackend",)
@@ -77,6 +83,11 @@ class AzureBlockBlobBackend(KeyValueStoreBackend):
             "DefaultAzureCredential" in self._connection_string or
             "ManagedIdentityCredential" in self._connection_string
         ):
+            if AzureStorageQueuesTransport is None:
+                raise ImproperlyConfigured(
+                    "The azure-storage-queue dependencies are required for "
+                    "using ManagedIdentityCredential or DefaultAzureCredential"
+                )
             # Leveraging the work that Kombu already did for us
             credential_, url = AzureStorageQueuesTransport.parse_uri(
                 self._connection_string

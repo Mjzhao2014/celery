@@ -1103,11 +1103,12 @@ class Task:
         Arguments:
             sig (Signature): signature to replace with.
         """
-        # Finally, either apply or delay the new signature!
+        # Clone to avoid mutating the original signature's options (stamps, etc.)
+        sig_to_apply = sig.clone()
         if self.request.is_eager:
-            return sig.apply().get()
+            return sig_to_apply.apply().get()
         else:
-            sig.delay()
+            sig_to_apply.delay()
             raise Ignore('Replaced by new task')
 
     def add_trail(self, result):
