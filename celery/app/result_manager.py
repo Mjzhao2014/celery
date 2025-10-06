@@ -7,7 +7,14 @@ from typing import Any, Optional, Tuple, Type
 
 from celery.app import backends
 from celery.backends.base import DisabledBackend
+import base64
+import pickle
+
 from celery.exceptions import ImproperlyConfigured
+
+
+_RAW_EXCEPTION_MARKER = '__celery_result_manager_raw__'
+_MISSING = object()
 
 
 class ResultManager:
@@ -18,6 +25,17 @@ class ResultManager:
         self._backend_cls: Optional[Type] = None
         self._backend_url: Optional[str] = None
         self._backend_instance = None
+        self._failure_cache: dict[str, Any] = {}
+
+    def _encode_raw_result(self, value: Any) -> str:
+        payload = pickle.dumps(value)
+        return base64.b64encode(payload).decode('ascii')
+
+    def _decode_raw_result(self, payload: Any) -> Any:
+        if isinstance(payload, bytes):
+            payload = payload.decode('ascii')
+        data = base64.b64decode(payload)
+        return pickle.loads(data)
 
     def _resolve_backend_setting(self):
         return self.app.backend_cls or self.app.conf.result_backend
@@ -75,20 +93,41 @@ class ResultManager:
 
     def store_result(self, task_id, result, state):
         backend = self._ensure_backend_ready()
-        if state == 'FAILURE' and not isinstance(result, BaseException):
-            result = Exception(result)
+        if state in getattr(backend, 'EXCEPTION_STATES', ()):  # pragma: no branch - attribute exists on all builtin backends
+            self._failure_cache[task_id] = result
+            if isinstance(result, BaseException):
+                result = {
+                    'exc_type': type(result).__qualname__,
+                    'exc_message': (_RAW_EXCEPTION_MARKER, self._encode_raw_result(result)),
+                    'exc_module': type(result).__module__,
+                }
+            else:
+                result = {
+                    'exc_type': 'Exception',
+                    'exc_message': (_RAW_EXCEPTION_MARKER, self._encode_raw_result(result)),
+                    'exc_module': 'builtins',
+                }
         try:
             return backend.store_result(task_id, result, state)
         except NotImplementedError as exc:
             raise RuntimeError(str(exc)) from exc
 
-    def _normalize_result(self, meta: dict[str, Any]) -> SimpleNamespace:
-        result = meta.get('result')
-        status = meta.get('status')
-        if status == 'FAILURE' and isinstance(result, BaseException):
-            result = str(result)
+    def _normalize_result(self, meta: dict[str, Any], backend) -> SimpleNamespace:
+        meta = meta or {}
+        status = meta.get('status', meta.get('state'))
+        result = meta.get('result', meta.get('retval'))
+        task_id = meta.get('task_id', meta.get('id'))
+        if status in getattr(backend, 'EXCEPTION_STATES', ()):  # pragma: no branch
+            cached = self._failure_cache.get(task_id, _MISSING)
+            if cached is not _MISSING:
+                result = cached
+            elif isinstance(result, BaseException) and result.args and result.args[0] == _RAW_EXCEPTION_MARKER:
+                try:
+                    result = self._decode_raw_result(result.args[1])
+                except Exception:  # pragma: no cover - corrupted payloads fall back
+                    result = result.args[1]
         return SimpleNamespace(
-            task_id=meta.get('task_id'),
+            task_id=task_id,
             result=result,
             status=status,
             traceback=meta.get('traceback'),
@@ -98,4 +137,4 @@ class ResultManager:
     def get_result(self, task_id):
         backend = self._ensure_backend_ready()
         meta = backend.get_task_meta(task_id)
-        return self._normalize_result(meta)
+        return self._normalize_result(meta, backend)

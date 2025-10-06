@@ -40,6 +40,8 @@ class TaskRegistryManager:
     def register_task(self, task):
         """Register a new task with the registry."""
         self._ensure_can_register()
+        if task.name in self.tasks:
+            raise ValueError(f"Task {task.name!r} is already registered")
         self.tasks[task.name] = task
         task._app = self.app
         task.bind(self.app)
