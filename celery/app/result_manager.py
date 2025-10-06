@@ -2,6 +2,7 @@
 """Result management adhering to SRP."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, Optional, Tuple, Type
 
@@ -73,22 +74,39 @@ class ResultManager:
             raise RuntimeError('Result backend is disabled')
         return backend
 
+    def _coerce_failure_result(self, backend, result):
+        if isinstance(result, BaseException):
+            return result
+        if isinstance(result, Mapping):
+            return result
+        return {
+            'exc_type': 'Exception',
+            'exc_message': (result,),
+            'exc_module': 'builtins',
+        }
+
     def store_result(self, task_id, result, state):
         backend = self._ensure_backend_ready()
-        if state == 'FAILURE' and not isinstance(result, BaseException):
-            result = Exception(result)
+        if state in getattr(backend, 'EXCEPTION_STATES', ()):  # pragma: no branch - attribute exists on all builtin backends
+            result = self._coerce_failure_result(backend, result)
         try:
             return backend.store_result(task_id, result, state)
         except NotImplementedError as exc:
             raise RuntimeError(str(exc)) from exc
 
-    def _normalize_result(self, meta: dict[str, Any]) -> SimpleNamespace:
-        result = meta.get('result')
-        status = meta.get('status')
-        if status == 'FAILURE' and isinstance(result, BaseException):
+    def _normalize_result(self, meta: dict[str, Any], backend) -> SimpleNamespace:
+        # Backends are expected to return a mapping, but older
+        # implementations (and some third-party ones) may provide
+        # slight variations in the payload.  We normalise the keys so
+        # consumers can rely on consistent attribute names.
+        meta = meta or {}
+        result = meta.get('result', meta.get('retval'))
+        status = meta.get('status', meta.get('state'))
+        task_id = meta.get('task_id', meta.get('id'))
+        if status in getattr(backend, 'EXCEPTION_STATES', ()) and isinstance(result, BaseException):
             result = str(result)
         return SimpleNamespace(
-            task_id=meta.get('task_id'),
+            task_id=task_id,
             result=result,
             status=status,
             traceback=meta.get('traceback'),
@@ -98,4 +116,4 @@ class ResultManager:
     def get_result(self, task_id):
         backend = self._ensure_backend_ready()
         meta = backend.get_task_meta(task_id)
-        return self._normalize_result(meta)
+        return self._normalize_result(meta, backend)

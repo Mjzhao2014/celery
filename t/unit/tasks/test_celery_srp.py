@@ -326,10 +326,10 @@ def test_register_task_raises_on_duplicate():
         def run(self): return "ok"
 
     first = manager.register_task(MyTask())
-    second = manager.register_task(MyTask())
+    with pytest.raises(ValueError):
+        manager.register_task(MyTask())
 
-    assert manager.tasks["mytask"] is second
-    assert second is not first
+    assert manager.tasks["mytask"] is first
 
 def test_get_task_returns_registered_task():
     app = Celery()

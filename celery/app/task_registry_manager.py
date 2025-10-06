@@ -40,6 +40,8 @@ class TaskRegistryManager:
     def register_task(self, task):
         """Register a new task with the registry."""
         self._ensure_can_register()
+        if task.name in self.tasks:
+            raise ValueError(f"Task with name {task.name!r} already registered")
         self.tasks[task.name] = task
         task._app = self.app
         task.bind(self.app)
@@ -63,3 +65,4 @@ class TaskRegistryManager:
     def finalize(self) -> None:
         """Prevent further tasks from being added."""
         self._finalized = True
+        self._allow_post_finalize = False
