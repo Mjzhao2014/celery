@@ -2,7 +2,8 @@
 """Signal management adhering to SRP."""
 from __future__ import annotations
 
-from typing import Callable, Dict, Tuple
+import inspect
+from typing import Callable, Dict, Optional, Tuple
 
 from celery import signals
 from celery.utils.dispatch import Signal
@@ -35,11 +36,48 @@ class SignalManager:
             return self._custom_signals[name]
         raise KeyError(name)
 
+    def _introspect_handler(self, handler: Callable) -> tuple[bool, Optional[set[str]]]:
+        try:
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return True, None
+
+        accepts_kwargs = any(
+            param.kind == param.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+        accepted_keywords = {
+            name
+            for name, param in signature.parameters.items()
+            if param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)
+        }
+        return accepts_kwargs, accepted_keywords
+
     def connect(self, signal: Signal | str, handler: Callable, **kwargs):
         sig = self._resolve_signal(signal)
+        accepts_kwargs, accepted = self._introspect_handler(handler)
+
+        def can_accept(name: str) -> bool:
+            if accepts_kwargs or accepted is None:
+                return True
+            return name in accepted
+
+        wants_sender = can_accept('sender')
+        wants_signal = can_accept('signal')
 
         def wrapper(sender=None, signal=None, **inner):
-            return handler(sender=sender, signal=signal, **inner)
+            call_kwargs: Dict[str, object] = {}
+            if wants_sender:
+                call_kwargs['sender'] = sender
+            if wants_signal:
+                call_kwargs['signal'] = signal
+            if accepts_kwargs:
+                call_kwargs.update(inner)
+            elif accepted:
+                for key, value in inner.items():
+                    if key in accepted:
+                        call_kwargs[key] = value
+            return handler(**call_kwargs)
 
         self._handler_wrappers[(sig, handler)] = wrapper
         return sig.connect(wrapper, **kwargs)
