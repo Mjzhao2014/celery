@@ -372,6 +372,17 @@ def test_finalize_prevents_task_registration():
     with pytest.raises(RuntimeError):
         manager.register_task(MyTask())
 
+
+def test_task_decorator_disallows_post_finalize_registration():
+    app = Celery()
+    app.finalize()
+
+    def sample():
+        return "ok"
+
+    with pytest.raises(RuntimeError):
+        app.task(name="post_finalize_task")(sample)
+
 def test_registered_task_is_callable():
     app = Celery()
     manager = TaskRegistryManager(app)

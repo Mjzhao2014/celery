@@ -19,6 +19,7 @@ class TaskRegistryManager:
         else:
             self.tasks = existing
         self._finalized = False
+        self._locked = False
 
     def _within_finalization(self) -> bool:
         mutex = getattr(self.app, '_finalize_mutex', None)
@@ -30,7 +31,7 @@ class TaskRegistryManager:
         return bool(owned())
 
     def _ensure_can_register(self) -> None:
-        if self._finalized and not self._within_finalization():
+        if self._locked and not self._within_finalization():
             raise RuntimeError('Task registry has been finalized')
 
     def _maybe_autofinalize(self) -> None:
@@ -41,16 +42,9 @@ class TaskRegistryManager:
     def finalized(self) -> bool:
         return self._finalized
 
-    @contextmanager
-    def allow_registration(self):
-        was_finalized = self._finalized
-        if was_finalized:
-            self._finalized = False
-        try:
-            yield
-        finally:
-            if was_finalized:
-                self._finalized = True
+    @property
+    def locked(self) -> bool:
+        return self._locked
 
     def register_task(self, task):
         """Register a new task with the registry."""
@@ -77,10 +71,23 @@ class TaskRegistryManager:
         self._maybe_autofinalize()
         return name in self.tasks
 
-    def finalize(self) -> None:
-        """Prevent further tasks from being added."""
+    def finalize(self, lock: bool = True) -> None:
+        """Mark the registry as finalized and optionally lock future registration."""
         self._finalized = True
+        if lock:
+            self._locked = True
 
-    def reopen(self) -> None:
-        """Allow task registration after a finalize event."""
-        self._finalized = False
+    @contextmanager
+    def allow_registration(self):
+        if not self._locked:
+            yield
+            return
+
+        if not self._within_finalization():
+            raise RuntimeError('Task registry has been finalized')
+
+        self._locked = False
+        try:
+            yield
+        finally:
+            self._locked = True

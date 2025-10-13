@@ -699,16 +699,16 @@ class test_Consumer(ConsumerCase):
 class test_WorkController(ConsumerCase):
 
     def setup_method(self):
-        self.worker = self.create_worker()
-        self._logger = worker_module.logger
-        self._comp_logger = components.logger
-        self.logger = worker_module.logger = Mock()
-        self.comp_logger = components.logger = Mock()
-
         @self.app.task(shared=False)
         def foo_task(x, y, z):
             return x * y * z
         self.foo_task = foo_task
+
+        self._logger = worker_module.logger
+        self._comp_logger = components.logger
+        self.worker = self.create_worker()
+        self.logger = worker_module.logger = Mock()
+        self.comp_logger = components.logger = Mock()
 
     def teardown_method(self):
         worker_module.logger = self._logger

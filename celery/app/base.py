@@ -7,11 +7,11 @@ import sys
 import threading
 import typing
 import warnings
+from contextlib import nullcontext
 from collections import UserDict, defaultdict, deque
 from datetime import datetime
 from datetime import timezone as datetime_timezone
 from operator import attrgetter
-from contextlib import nullcontext
 
 from click.exceptions import Exit
 from dateutil.parser import isoparse
@@ -593,7 +593,7 @@ class Celery:
             raise RuntimeError('Contract breach: app not finalized')
         name = name or self.gen_task_name(fun.__name__, fun.__module__)
         base = base or self.Task
-        if not self.task_registry.has_task(name):
+        if name not in self.task_registry.tasks:
             if pydantic:
                 fun = pydantic_wrapper(self, fun, name,
                                         pydantic_strict,
@@ -618,7 +618,7 @@ class Celery:
                 pass
             # add to registry using manager (binds task)
             context = (self.task_registry.allow_registration()
-                       if self.task_registry.finalized else nullcontext())
+                       if self.task_registry.locked else nullcontext())
             with context:
                 self.task_registry.register_task(task)
             add_autoretry_behaviour(task, **options)
@@ -662,7 +662,9 @@ class Celery:
                 while pending:
                     maybe_evaluate(pending.popleft())
                 # now finalize registry to prevent further registration
-                self.task_registry.finalize()
+                # auto finalization keeps the registry open for additional
+                # registrations so decorators can continue to work lazily.
+                self.task_registry.finalize(lock=not auto)
                 # ensure tasks bound to this app
                 for task in self._tasks.values():
                     task.bind(self)
