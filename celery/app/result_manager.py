@@ -132,9 +132,9 @@ class ResultManager:
     def get_backend(self):
         backend = self.backend
         if backend is None:
-            if self._backend_cls is None and self._backend_instance is None:
-                raise RuntimeError('Result backend not initialized')
-            backend = self.init_backend()
+            # if self._backend_cls is None and self._backend_instance is None:
+            raise RuntimeError('Result backend not initialized')
+            # backend = self.init_backend()
         return backend
 
     def _ensure_backend_ready(self):

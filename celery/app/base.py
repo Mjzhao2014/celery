@@ -617,10 +617,9 @@ class Celery:
             except AttributeError:
                 pass
             # add to registry using manager (binds task)
-            context = (self.task_registry.allow_registration()
-                       if self.task_registry.finalized else nullcontext())
-            with context:
-                self.task_registry.register_task(task)
+            if self.task_registry.finalized:
+                raise RuntimeError('Task registry has been finalized')
+            self.task_registry.register_task(task)
             add_autoretry_behaviour(task, **options)
         else:
             task = self.task_registry.get_task(name)
