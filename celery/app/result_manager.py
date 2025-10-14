@@ -32,6 +32,19 @@ class ResultManager:
         if existing_backend is not None:
             self.backend = existing_backend
 
+    def reset_backend(self) -> None:
+        """Clear any cached backend definition so it can be rebuilt."""
+        self._backend_cls = None
+        self._backend_url = None
+        self._backend_instance = None
+        self._failure_cache.clear()
+        self.backend = None
+        if hasattr(self.app, '_backend_cache'):
+            self.app._backend_cache = None
+        local = getattr(self.app, '_local', None)
+        if local is not None and hasattr(local, 'backend'):
+            delattr(local, 'backend')
+
     @property
     def backend(self):
         return getattr(self._backend_local, 'instance', None)

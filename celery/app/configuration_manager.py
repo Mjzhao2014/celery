@@ -47,6 +47,8 @@ class ConfigurationManager:
         if data:
             self.app.conf.update(data)
         self._sync_override_backends()
+        if hasattr(self.app, 'result_manager'):
+            self.app.result_manager.reset_backend()
         if getattr(self.app, 'configured', False):
             self.conf = self.app.conf
 

@@ -662,9 +662,7 @@ class Celery:
                 while pending:
                     maybe_evaluate(pending.popleft())
                 # now finalize registry to prevent further registration
-                # auto finalization keeps the registry open for additional
-                # registrations so decorators can continue to work lazily.
-                self.task_registry.finalize(lock=not auto)
+                self.task_registry.finalize()
                 # ensure tasks bound to this app
                 for task in self._tasks.values():
                     task.bind(self)

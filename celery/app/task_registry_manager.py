@@ -71,11 +71,10 @@ class TaskRegistryManager:
         self._maybe_autofinalize()
         return name in self.tasks
 
-    def finalize(self, lock: bool = True) -> None:
-        """Mark the registry as finalized and optionally lock future registration."""
+    def finalize(self) -> None:
+        """Mark the registry as finalized and prevent future registrations."""
         self._finalized = True
-        if lock:
-            self._locked = True
+        self._locked = True
 
     @contextmanager
     def allow_registration(self):
