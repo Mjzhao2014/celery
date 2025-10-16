@@ -188,4 +188,4 @@ class ResultManager:
     def get_result(self, task_id):
         backend = self._ensure_backend_ready()
         meta = backend.get_task_meta(task_id)
-        return self._normalize_result(meta, backend)
+        return self._normalize_result(meta, backend).result
