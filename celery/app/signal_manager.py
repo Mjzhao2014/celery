@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import Callable, Dict, Optional, Tuple
+import uuid
+from typing import Callable, Dict, List, Optional, Tuple
 
 from celery import signals
 from celery.utils.dispatch import Signal
@@ -16,7 +17,7 @@ class SignalManager:
         self.app = app
         self._custom_signals: Dict[str, Signal] = {}
         self._builtin_signals: Dict[str, Signal] = {}
-        self._handler_wrappers: Dict[Tuple[Signal, Callable], Callable] = {}
+        self._handler_wrappers: Dict[Tuple[Signal, Callable], List[Tuple[str, Callable]]] = {}
         for name in dir(signals):
             sig = getattr(signals, name)
             if isinstance(sig, Signal):
@@ -79,15 +80,19 @@ class SignalManager:
                         call_kwargs[key] = value
             return handler(**call_kwargs)
 
-        self._handler_wrappers[(sig, handler)] = wrapper
+        dispatch_uid = kwargs.setdefault('dispatch_uid', uuid.uuid4().hex)
+        self._handler_wrappers.setdefault((sig, handler), []).append((dispatch_uid, wrapper))
         return sig.connect(wrapper, **kwargs)
 
     def disconnect(self, signal: Signal | str, handler: Callable):
         sig = self._resolve_signal(signal)
-        wrapper = self._handler_wrappers.pop((sig, handler), None)
-        if wrapper is None:
-            wrapper = handler
-        return sig.disconnect(wrapper)
+        wrappers = self._handler_wrappers.get((sig, handler))
+        if wrappers:
+            dispatch_uid, wrapper = wrappers.pop()
+            if not wrappers:
+                del self._handler_wrappers[(sig, handler)]
+            return sig.disconnect(wrapper, dispatch_uid=dispatch_uid)
+        return sig.disconnect(handler)
 
     def emit(self, signal: Signal | str, **kwargs):
         sig = self._resolve_signal(signal)
